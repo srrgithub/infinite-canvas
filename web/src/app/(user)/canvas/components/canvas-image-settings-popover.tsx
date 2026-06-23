@@ -8,11 +8,12 @@ import { Button } from "antd";
 import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { AiConfig } from "@/stores/use-config-store";
+import { useEffectiveConfig, type AiConfig, type ImageRequestModeOption } from "@/stores/use-config-store";
 
 type CanvasImageSettingsPopoverProps = {
     config: AiConfig;
-    onConfigChange: (key: keyof AiConfig, value: string) => void;
+    imageRequestMode?: ImageRequestModeOption;
+    onConfigChange: (key: keyof AiConfig, value: string | undefined) => void;
     onMissingConfig?: () => void;
     onOpenChange?: (open: boolean) => void;
     buttonClassName?: string;
@@ -21,7 +22,8 @@ type CanvasImageSettingsPopoverProps = {
     autoAdjustOverflow?: boolean;
 };
 
-export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft" }: CanvasImageSettingsPopoverProps) {
+export function CanvasImageSettingsPopover({ config, imageRequestMode, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft" }: CanvasImageSettingsPopoverProps) {
+    const globalConfig = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -58,7 +60,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         };
     }, [onOpenChange, open]);
 
-    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} /> : null;
+    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} imageRequestMode={imageRequestMode} globalImageRequestMode={globalConfig.imageRequestMode} onConfigChange={onConfigChange} /> : null;
 
     return (
         <>
@@ -80,6 +82,8 @@ function ImageSettingsPortal({
     placement,
     theme,
     config,
+    imageRequestMode,
+    globalImageRequestMode,
     onConfigChange,
 }: {
     buttonRect: DOMRect;
@@ -87,7 +91,9 @@ function ImageSettingsPortal({
     placement: CanvasImageSettingsPopoverProps["placement"];
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
-    onConfigChange: (key: keyof AiConfig, value: string) => void;
+    imageRequestMode?: ImageRequestModeOption;
+    globalImageRequestMode: AiConfig["imageRequestMode"];
+    onConfigChange: (key: keyof AiConfig, value: string | undefined) => void;
 }) {
     const width = 356;
     const gap = 8;
@@ -119,7 +125,15 @@ function ImageSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />
+            <ImageSettingsPanel
+                config={config}
+                onConfigChange={(key, value) => onConfigChange(key, value)}
+                theme={theme}
+                className="space-y-4"
+                imageRequestMode={imageRequestMode || "global"}
+                globalImageRequestMode={globalImageRequestMode}
+                onImageRequestModeChange={(value) => onConfigChange("imageRequestMode", value === "global" ? undefined : value)}
+            />
         </div>,
         document.body,
     );

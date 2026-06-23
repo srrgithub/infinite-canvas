@@ -2,10 +2,10 @@
 
 import type { CSSProperties } from "react";
 import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
-import { Button, Segmented } from "antd";
+import { Button, Segmented, Select } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, imageRequestModeLabel, imageRequestModeOverrideOptions, resolveImageRequestMode, useConfigStore, useEffectiveConfig, type AiConfig, type ImageRequestModeOption } from "@/stores/use-config-store";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -105,11 +105,26 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 {mode === "video" ? (
                     <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                 ) : mode === "image" ? (
-                    <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
+                    <CanvasImageSettingsPopover config={config} imageRequestMode={(node.metadata?.imageRequestMode || "global") as ImageRequestModeOption} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
                     <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
                 ) : null}
             </div>
+
+            {mode === "image" ? (
+                <div className="mb-2 cursor-default" onMouseDown={(event) => event.stopPropagation()}>
+                    <Select
+                        size="small"
+                        className="canvas-compact-control h-8 w-full"
+                        value={(node.metadata?.imageRequestMode || "global") as ImageRequestModeOption}
+                        options={imageRequestModeOverrideOptions.map((option) => ({
+                            ...option,
+                            label: option.value === "global" ? `沿用总配置（${imageRequestModeLabel(globalConfig.imageRequestMode)}）` : option.label,
+                        }))}
+                        onChange={(value) => onConfigChange(node.id, { imageRequestMode: value === "global" ? undefined : value })}
+                    />
+                </div>
+            ) : null}
 
             <Button
                 type="primary"
@@ -158,6 +173,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         model: node.metadata?.model || defaultModel || (mode === "audio" ? defaultConfig.audioModel : globalConfig.model || defaultConfig.model),
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        imageRequestMode: resolveImageRequestMode(globalConfig, node.metadata?.imageRequestMode),
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,
         vquality: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality,
         videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,

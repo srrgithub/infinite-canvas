@@ -72,6 +72,7 @@ type ImageApiResponse = {
     code?: number;
     msg?: string;
 };
+type ImageStreamState = { buffer: string; raw: string; images: Array<{ id: string; dataUrl: string }>; error?: string };
 type GeminiPart = {
     text?: string;
     inlineData?: { mimeType?: string; data?: string };
@@ -205,6 +206,81 @@ function parseImagePayload(payload: ImageApiResponse) {
     }
 
     return images;
+}
+
+async function requestStreamingImage(config: AiConfig, path: "/images/generations" | "/images/edits", body: BodyInit, headers: HeadersInit, options?: RequestOptions) {
+    const response = await fetch(aiApiUrl(config, path), {
+        method: "POST",
+        headers: { ...headers, Accept: "text/event-stream" },
+        body,
+        signal: options?.signal,
+    });
+    if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
+    if (!response.body) return parseImagePayload((await response.json()) as ImageApiResponse);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const state: ImageStreamState = { buffer: "", raw: "", images: [] };
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeImageStreamText(state, decoder.decode(value, { stream: true }));
+        if (state.error) throw new Error(state.error);
+    }
+    consumeImageStreamText(state, decoder.decode(), true);
+    if (state.error) throw new Error(state.error);
+    if (state.images.length) return state.images;
+    const text = state.raw.trim();
+    if (!text) throw new Error("接口没有返回图片");
+    return parseImagePayload(JSON.parse(text) as ImageApiResponse);
+}
+
+function consumeImageStreamText(state: ImageStreamState, text: string, flush = false) {
+    state.raw += text;
+    state.buffer += text;
+    for (;;) {
+        const match = state.buffer.match(/\r?\n\r?\n/);
+        if (!match) break;
+        const index = match.index ?? 0;
+        consumeImageStreamBlock(state.buffer.slice(0, index), state);
+        state.buffer = state.buffer.slice(index + match[0].length);
+    }
+    if (flush && state.buffer.trim()) {
+        consumeImageStreamBlock(state.buffer, state);
+        state.buffer = "";
+    }
+}
+
+function consumeImageStreamBlock(block: string, state: ImageStreamState) {
+    const dataLines = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""));
+    if (!dataLines.length) return;
+    const data = dataLines.join("\n").trim();
+    if (!data || data === "[DONE]") return;
+    const event = JSON.parse(data) as Record<string, unknown>;
+    const errorMessage = responseErrorMessage(event);
+    if (errorMessage) state.error = errorMessage;
+    const urls = extractImageDataUrls(event);
+    if (urls.length) state.images = urls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
+}
+
+function extractImageDataUrls(value: unknown): string[] {
+    if (Array.isArray(value)) return value.flatMap(extractImageDataUrls);
+    if (!isRecord(value)) return [];
+    const current = resolveImageDataUrl(value) || resolveInlineImageDataUrl(value);
+    return [
+        ...(current ? [current] : []),
+        ...Object.entries(value)
+            .filter(([key]) => key !== "error")
+            .flatMap(([, child]) => extractImageDataUrls(child)),
+    ];
+}
+
+function resolveInlineImageDataUrl(value: Record<string, unknown>) {
+    const b64 = stringValue(value.partial_image_b64) || stringValue(value.partialImageB64) || stringValue(value.image_b64) || stringValue(value.imageB64);
+    return b64 ? `data:image/png;base64,${b64}` : null;
 }
 
 function readAxiosError(error: unknown, fallback: string) {
@@ -377,8 +453,9 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
         if (!match) break;
-        consumeResponseStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
-        state.buffer = state.buffer.slice(match.index + match[0].length);
+        const index = match.index ?? 0;
+        consumeResponseStreamBlock(state.buffer.slice(0, index), state, onDelta);
+        state.buffer = state.buffer.slice(index + match[0].length);
     }
     if (flush && state.buffer.trim()) {
         consumeResponseStreamBlock(state.buffer, state, onDelta);
@@ -525,8 +602,9 @@ function consumeGeminiStreamText(state: GeminiStreamState, text: string, onDelta
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
         if (!match) break;
-        consumeGeminiStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
-        state.buffer = state.buffer.slice(match.index + match[0].length);
+        const index = match.index ?? 0;
+        consumeGeminiStreamBlock(state.buffer.slice(0, index), state, onDelta);
+        state.buffer = state.buffer.slice(index + match[0].length);
     }
     if (flush && state.buffer.trim()) {
         consumeGeminiStreamBlock(state.buffer, state, onDelta);
@@ -620,22 +698,20 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     try {
-        const response = await axios.post<ImageApiResponse>(
-            aiApiUrl(requestConfig, "/images/generations"),
-            {
-                model: requestConfig.model,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                n,
-                ...(quality ? { quality } : {}),
-                ...(requestSize ? { size: requestSize } : {}),
-                response_format: "b64_json",
-                output_format: IMAGE_OUTPUT_FORMAT,
-            },
-            {
-                headers: aiHeaders(requestConfig, "application/json"),
-                signal: options?.signal,
-            },
-        );
+        const body = {
+            model: requestConfig.model,
+            prompt: withSystemPrompt(requestConfig, prompt),
+            n,
+            ...(quality ? { quality } : {}),
+            ...(requestSize ? { size: requestSize } : {}),
+            response_format: "b64_json",
+            output_format: IMAGE_OUTPUT_FORMAT,
+        };
+        if (requestConfig.imageRequestMode === "stream") return await requestStreamingImage(requestConfig, "/images/generations", JSON.stringify({ ...body, stream: true }), aiHeaders(requestConfig, "application/json"), options);
+        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/generations"), body, {
+            headers: aiHeaders(requestConfig, "application/json"),
+            signal: options?.signal,
+        });
         const images = parseImagePayload(response.data);
         return images;
     } catch (error) {
@@ -663,6 +739,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     formData.set("n", String(n));
     formData.set("response_format", "b64_json");
     formData.set("output_format", IMAGE_OUTPUT_FORMAT);
+    if (requestConfig.imageRequestMode === "stream") formData.set("stream", "true");
     if (quality) {
         formData.set("quality", quality);
     }
@@ -674,6 +751,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (mask) formData.set("mask", dataUrlToFile(mask));
 
     try {
+        if (requestConfig.imageRequestMode === "stream") return await requestStreamingImage(requestConfig, "/images/edits", formData, aiHeaders(requestConfig), options);
         const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
         const images = parseImagePayload(response.data);
         return images;

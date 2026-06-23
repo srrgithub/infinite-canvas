@@ -1,10 +1,10 @@
 "use client";
 
 import { type ReactNode, useState } from "react";
-import { ConfigProvider, Switch } from "antd";
+import { ConfigProvider, Select, Switch } from "antd";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import type { AiConfig } from "@/stores/use-config-store";
+import { imageRequestModeLabel, imageRequestModeOverrideOptions, type AiConfig, type ImageRequestModeOption } from "@/stores/use-config-store";
 
 const qualityOptions = [
     { value: "auto", label: "自动" },
@@ -38,9 +38,12 @@ type ImageSettingsPanelProps = {
     className?: string;
     maxCount?: number;
     quickCount?: number;
+    imageRequestMode?: ImageRequestModeOption;
+    globalImageRequestMode?: AiConfig["imageRequestMode"];
+    onImageRequestModeChange?: (value: ImageRequestModeOption) => void;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10, imageRequestMode, globalImageRequestMode, onImageRequestModeChange }: ImageSettingsPanelProps) {
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
@@ -70,6 +73,20 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 }}
             >
                 {showTitle ? <div className="text-lg font-semibold">图像设置</div> : null}
+                {onImageRequestModeChange ? (
+                    <div className="space-y-2.5">
+                        <SettingTitle color={theme.node.muted}>请求方式</SettingTitle>
+                        <Select
+                            className="w-full"
+                            value={imageRequestMode || "global"}
+                            options={imageRequestModeOverrideOptions.map((option) => ({
+                                ...option,
+                                label: option.value === "global" ? `沿用总配置（${imageRequestModeLabel(globalImageRequestMode || config.imageRequestMode)}）` : option.label,
+                            }))}
+                            onChange={onImageRequestModeChange}
+                        />
+                    </div>
+                ) : null}
                 <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>质量</SettingTitle>
                     <div className="grid grid-cols-4 gap-2.5">

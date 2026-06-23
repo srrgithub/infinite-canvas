@@ -6,6 +6,8 @@ import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 export type ApiCallFormat = "openai" | "gemini";
+export type ImageRequestMode = "sync" | "stream";
+export type ImageRequestModeOption = "global" | ImageRequestMode;
 
 export type ModelChannel = {
     id: string;
@@ -45,6 +47,7 @@ export type AiConfig = {
     size: string;
     count: string;
     canvasImageCount: string;
+    imageRequestMode: ImageRequestMode;
 };
 
 export type WebdavSyncConfig = {
@@ -100,7 +103,18 @@ export const defaultConfig: AiConfig = {
     size: "1:1",
     count: "1",
     canvasImageCount: "3",
+    imageRequestMode: "stream",
 };
+
+export const imageRequestModeOptions: Array<{ label: string; value: ImageRequestMode }> = [
+    { label: "流式请求", value: "stream" },
+    { label: "同步请求", value: "sync" },
+];
+
+export const imageRequestModeOverrideOptions: Array<{ label: string; value: ImageRequestModeOption }> = [
+    { label: "沿用总配置", value: "global" },
+    ...imageRequestModeOptions,
+];
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
     proxyMode: "direct",
@@ -228,6 +242,7 @@ export const useConfigStore = create<ConfigStore>()(
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
                         canvasImageCount: config.canvasImageCount || "3",
+                        imageRequestMode: normalizeImageRequestMode(config.imageRequestMode),
                         imageModels: Array.isArray(persistedConfig.imageModels) ? normalizeModelList(config.imageModels, channels) : filterModelsByCapability(models, "image"),
                         videoModels: Array.isArray(persistedConfig.videoModels) ? normalizeModelList(config.videoModels, channels) : filterModelsByCapability(models, "video"),
                         textModels: Array.isArray(persistedConfig.textModels) ? normalizeModelList(config.textModels, channels) : filterModelsByCapability(models, "text"),
@@ -300,8 +315,8 @@ export function normalizeModelOptionValue(value: string | undefined, channels: M
         const channel = channels.find((item) => item.id === decoded.channelId);
         return channel && channel.models.includes(decoded.model) ? model : "";
     }
-    const channel = channels.find((item) => item.models.includes(decoded?.model || model)) || channels[0];
-    return channel && channel.models.includes(decoded?.model || model) ? encodeChannelModel(channel.id, decoded?.model || model) : model;
+    const channel = channels.find((item) => item.models.includes(model)) || channels[0];
+    return channel && channel.models.includes(model) ? encodeChannelModel(channel.id, model) : model;
 }
 
 export function resolveModelChannel(config: AiConfig, value: string) {
@@ -320,6 +335,18 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         apiKey: channel.apiKey,
         apiFormat: channel.apiFormat,
     };
+}
+
+export function normalizeImageRequestMode(value: unknown): ImageRequestMode {
+    return value === "sync" ? "sync" : "stream";
+}
+
+export function resolveImageRequestMode(config: Pick<AiConfig, "imageRequestMode">, value?: ImageRequestModeOption): ImageRequestMode {
+    return value === "sync" || value === "stream" ? value : normalizeImageRequestMode(config.imageRequestMode);
+}
+
+export function imageRequestModeLabel(value: ImageRequestMode) {
+    return value === "sync" ? "同步请求" : "流式请求";
 }
 
 function normalizeChannels(config: AiConfig) {

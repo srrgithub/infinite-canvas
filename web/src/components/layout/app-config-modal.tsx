@@ -9,7 +9,7 @@ import { fetchChannelModels } from "@/services/api/image";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, imageRequestModeOptions, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -306,18 +306,25 @@ export function AppConfigModal() {
                                 </div>
                                 <div className="grid gap-4 md:grid-cols-2">
                                     {modelGroups.map((group) => (
-                                        <Form.Item key={group.modelsKey} label={group.optionsLabel} className="mb-0">
-                                            <Select
-                                                mode="tags"
-                                                showSearch
-                                                allowClear
-                                                maxTagCount="responsive"
-                                                placeholder={config.models.length ? `请选择或输入${group.optionsLabel}` : "先到渠道里填写或拉取模型"}
-                                                value={config[group.modelsKey]}
-                                                options={modelOptions}
-                                                onChange={(models) => updateCapabilityModels(group, models)}
-                                            />
-                                        </Form.Item>
+                                        <div key={group.modelsKey} className="space-y-4">
+                                            <Form.Item label={group.optionsLabel} className="mb-0">
+                                                <Select
+                                                    mode="tags"
+                                                    showSearch
+                                                    allowClear
+                                                    maxTagCount="responsive"
+                                                    placeholder={config.models.length ? `请选择或输入${group.optionsLabel}` : "先到渠道里填写或拉取模型"}
+                                                    value={config[group.modelsKey]}
+                                                    options={modelOptions}
+                                                    onChange={(models) => updateCapabilityModels(group, models)}
+                                                />
+                                            </Form.Item>
+                                            {group.capability === "image" ? (
+                                                <Form.Item label="默认生图请求方式" className="mb-0">
+                                                    <Select value={config.imageRequestMode} options={imageRequestModeOptions} onChange={(value) => updateConfig("imageRequestMode", value)} />
+                                                </Form.Item>
+                                            ) : null}
+                                        </div>
                                     ))}
                                 </div>
                                 <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
