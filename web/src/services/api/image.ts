@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import { buildApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { aiRequestHeaders, aiRequestUrl } from "@/services/api/ai-proxy";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
@@ -209,9 +210,10 @@ function parseImagePayload(payload: ImageApiResponse) {
 }
 
 async function requestStreamingImage(config: AiConfig, path: "/images/generations" | "/images/edits", body: BodyInit, headers: HeadersInit, options?: RequestOptions) {
-    const response = await fetch(aiApiUrl(config, path), {
+    const target = aiApiUrl(config, path);
+    const response = await fetch(aiRequestUrl(config, target), {
         method: "POST",
-        headers: { ...headers, Accept: "text/event-stream" },
+        headers: aiRequestHeaders(config, target, { ...headers, Accept: "text/event-stream" }),
         body,
         signal: options?.signal,
     });
@@ -464,9 +466,10 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
 }
 
 async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const response = await fetch(aiApiUrl(config, "/responses"), {
+    const target = aiApiUrl(config, "/responses");
+    const response = await fetch(aiRequestUrl(config, target), {
         method: "POST",
-        headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
+        headers: aiRequestHeaders(config, target, { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" }),
         body: JSON.stringify({ ...body, stream: true }),
         signal: options?.signal,
     });
@@ -571,9 +574,10 @@ function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoi
 }
 
 async function requestGeminiStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const response = await fetch(`${geminiApiUrl(config, "streamGenerateContent")}?alt=sse`, {
+    const target = `${geminiApiUrl(config, "streamGenerateContent")}?alt=sse`;
+    const response = await fetch(aiRequestUrl(config, target), {
         method: "POST",
-        headers: geminiHeaders(config),
+        headers: aiRequestHeaders(config, target, geminiHeaders(config)),
         body: JSON.stringify(body),
         signal: options?.signal,
     });
@@ -658,13 +662,14 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
+    const target = geminiApiUrl(config, "generateContent");
     const response = await axios.post<GeminiPayload>(
-        geminiApiUrl(config, "generateContent"),
+        aiRequestUrl(config, target),
         {
             ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"] } }),
             contents: [{ role: "user", parts }],
         },
-        { headers: geminiHeaders(config), signal: options?.signal },
+        { headers: aiRequestHeaders(config, target, geminiHeaders(config)), signal: options?.signal },
     );
     return parseGeminiImagePayload(response.data);
 }
@@ -708,8 +713,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             output_format: IMAGE_OUTPUT_FORMAT,
         };
         if (requestConfig.imageRequestMode === "stream") return await requestStreamingImage(requestConfig, "/images/generations", JSON.stringify({ ...body, stream: true }), aiHeaders(requestConfig, "application/json"), options);
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/generations"), body, {
-            headers: aiHeaders(requestConfig, "application/json"),
+        const target = aiApiUrl(requestConfig, "/images/generations");
+        const response = await axios.post<ImageApiResponse>(aiRequestUrl(requestConfig, target), body, {
+            headers: aiRequestHeaders(requestConfig, target, aiHeaders(requestConfig, "application/json")),
             signal: options?.signal,
         });
         const images = parseImagePayload(response.data);
@@ -752,7 +758,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 
     try {
         if (requestConfig.imageRequestMode === "stream") return await requestStreamingImage(requestConfig, "/images/edits", formData, aiHeaders(requestConfig), options);
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
+        const target = aiApiUrl(requestConfig, "/images/edits");
+        const response = await axios.post<ImageApiResponse>(aiRequestUrl(requestConfig, target), formData, { headers: aiRequestHeaders(requestConfig, target, aiHeaders(requestConfig)), signal: options?.signal });
         const images = parseImagePayload(response.data);
         return images;
     } catch (error) {
@@ -797,20 +804,23 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
     }
 }
 
-export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "proxyMode">) {
     try {
         if (config.apiFormat === "gemini") {
-            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
+            const requestConfig = { ...defaultGeminiConfig, ...config };
+            const target = geminiApiUrl(requestConfig);
+            const response = await axios.get<GeminiPayload>(aiRequestUrl(requestConfig, target), { headers: aiRequestHeaders(requestConfig, target, geminiHeaders(requestConfig)) });
             validateGeminiPayload(response.data);
             return (response.data.models || [])
                 .map((model) => model.name?.replace(/^models\//, ""))
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
-            headers: {
+        const target = buildApiUrl(config.baseUrl, "/models");
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(aiRequestUrl(config, target), {
+            headers: aiRequestHeaders(config, target, {
                 Authorization: `Bearer ${config.apiKey}`,
-            },
+            }),
         });
         return (response.data.data || [])
             .map((model) => model.id)
@@ -822,13 +832,14 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat, proxyMode: channel.proxyMode });
 }
 
-const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {
+const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "proxyMode" | "model" | "systemPrompt"> = {
     baseUrl: "https://generativelanguage.googleapis.com",
     apiKey: "",
     apiFormat: "gemini",
+    proxyMode: "direct",
     model: "",
     systemPrompt: "",
 };

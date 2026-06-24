@@ -24,7 +24,7 @@
 ## 核心功能
 
 - 无限画布：多画布项目、节点拖拽缩放、连线、小地图、撤销重做、导入导出。
-- AI 创作：浏览器前台直连你配置的 OpenAI 兼容接口，支持文生图、图生图、参考图编辑、文本问答、音频和视频生成；Seedance 2.0 可通过火山方舟 Agent Plan 接入。
+- AI 创作：默认浏览器前台直连你配置的 OpenAI 兼容接口，也可按渠道启用 Next.js 转发处理 CORS；支持文生图、图生图、参考图编辑、文本问答、音频和视频生成；Seedance 2.0 可通过火山方舟 Agent Plan 接入。
 - 画布助手：围绕选中节点和上游节点对话、生图，并把结果插回画布。
 - 本地 Agent：通过本机 Canvas Agent 连接 Codex / Claude Code，让 Agent 通过 MCP 操作当前画布。
 - 提示词库：Next.js route 抓取多个 GitHub 开源项目，并缓存在运行实例内存中。
@@ -36,7 +36,7 @@
 ## 技术栈
 
 - 前端：Next.js、React、TypeScript、Tailwind CSS、Ant Design、Zustand、TanStack Query。
-- 少量 Next.js Route：第三方提示词内存缓存、WebDAV 可选代理。
+- 少量 Next.js Route：第三方提示词内存缓存、WebDAV 可选代理、AI 渠道可选转发。
 - 部署：Vercel 或 Docker。
 
 ## 快速开始

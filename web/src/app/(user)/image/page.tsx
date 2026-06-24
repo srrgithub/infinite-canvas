@@ -61,6 +61,28 @@ type GenerationLog = {
 
 type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "size" | "count" | "imageRequestMode">;
 
+type WorkbenchTask = {
+    id: string;
+    createdAt: number;
+    prompt: string;
+    references: ReferenceImage[];
+    results: GenerationResult[];
+    running: boolean;
+    startedAt: number;
+    elapsedMs: number;
+    previewLog: GenerationLog | null;
+};
+
+type RequestSnapshot = {
+    taskId: string;
+    text: string;
+    model: string;
+    generationCount: number;
+    batchStartedAt: number;
+    config: AiConfig;
+    references: ReferenceImage[];
+};
+
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
@@ -76,37 +98,54 @@ export default function ImagePage() {
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const addAsset = useAssetStore((state) => state.addAsset);
-    const [prompt, setPrompt] = useState("");
-    const [references, setReferences] = useState<ReferenceImage[]>([]);
-    const [results, setResults] = useState<GenerationResult[]>([]);
+    const [initialTaskId] = useState(() => nanoid());
+    const [tasks, setTasks] = useState<WorkbenchTask[]>(() => [createWorkbenchTask({ id: initialTaskId })]);
+    const [activeTaskId, setActiveTaskId] = useState(initialTaskId);
     const [logs, setLogs] = useState<GenerationLog[]>([]);
-    const [running, setRunning] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [promptDialogOpen, setPromptDialogOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
-    const [startedAt, setStartedAt] = useState(0);
-    const [elapsedMs, setElapsedMs] = useState(0);
     const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
-    const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [imageRequestMode, setImageRequestMode] = useState<ImageRequestModeOption>("global");
 
+    const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0];
+    const prompt = activeTask?.prompt || "";
+    const references = activeTask?.references || [];
+    const results = activeTask?.results || [];
+    const running = Boolean(activeTask?.running);
+    const elapsedMs = activeTask?.elapsedMs || 0;
+    const previewLog = activeTask?.previewLog || null;
     const model = effectiveConfig.imageModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
     const generationCount = Math.max(1, Math.min(10, Number(config.count) || 1));
+    const hasRunningTasks = tasks.some((task) => task.running && task.startedAt);
 
     useEffect(() => {
-        if (!running || !startedAt) return;
-        const timer = window.setInterval(() => setElapsedMs(performance.now() - startedAt), 1000);
+        if (!hasRunningTasks) return;
+        const timer = window.setInterval(() => {
+            setTasks((value) => value.map((task) => (task.running && task.startedAt ? { ...task, elapsedMs: performance.now() - task.startedAt } : task)));
+        }, 1000);
         return () => window.clearInterval(timer);
-    }, [running, startedAt]);
+    }, [hasRunningTasks]);
 
     useEffect(() => {
         void refreshLogs();
     }, []);
 
+    const updateTask = (taskId: string, updater: (task: WorkbenchTask) => WorkbenchTask) => {
+        setTasks((value) => value.map((task) => (task.id === taskId ? updater(task) : task)));
+    };
+
+    const updateActiveTask = (updater: (task: WorkbenchTask) => WorkbenchTask) => {
+        if (!activeTask) return;
+        updateTask(activeTask.id, updater);
+    };
+
     const addReferences = async (files?: FileList | null) => {
+        const taskId = activeTask?.id;
+        if (!taskId) return;
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
         const nextReferences = await Promise.all(
             imageFiles.map(async (file) => {
@@ -114,11 +153,13 @@ export default function ImagePage() {
                 return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
             }),
         );
-        setReferences((value) => [...value, ...nextReferences]);
+        updateTask(taskId, (task) => ({ ...task, references: [...task.references, ...nextReferences] }));
     };
 
     const addReferencesFromClipboard = async () => {
         try {
+            const taskId = activeTask?.id;
+            if (!taskId) return;
             const items = await navigator.clipboard.read();
             const blobs = await Promise.all(items.flatMap((item) => item.types.filter((type) => type.startsWith("image/")).map((type) => item.getType(type))));
             if (!blobs.length) {
@@ -131,7 +172,7 @@ export default function ImagePage() {
                     return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
             );
-            setReferences((value) => [...value, ...nextReferences]);
+            updateTask(taskId, (task) => ({ ...task, references: [...task.references, ...nextReferences] }));
             message.success(`已读取 ${nextReferences.length} 张参考图`);
         } catch {
             message.error("剪切板里没有可读取的图片");
@@ -139,33 +180,24 @@ export default function ImagePage() {
     };
 
     const generate = async () => {
-        const text = prompt.trim();
-        if (!text) {
-            message.error("请输入生图提示词");
-            return;
-        }
-        if (!isAiConfigReady(effectiveConfig, model)) {
-            message.warning("请先完成配置");
-            openConfigDialog(true);
-            return;
-        }
-
-        const snapshot = buildRequestSnapshot();
+        const snapshot = buildRequestSnapshot(activeTask);
         if (!snapshot) return;
 
-        setElapsedMs(0);
-        setRunning(true);
-        setPreviewLog(null);
-        setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
-        const batchStartedAt = performance.now();
-        setStartedAt(batchStartedAt);
+        updateTask(snapshot.taskId, (task) => ({
+            ...task,
+            elapsedMs: 0,
+            running: true,
+            previewLog: null,
+            results: Array.from({ length: snapshot.generationCount }, () => ({ id: nanoid(), status: "pending" })),
+            startedAt: snapshot.batchStartedAt,
+        }));
 
-        const tasks = Array.from({ length: generationCount }, (_, index) => runGenerationSlot(index, snapshot));
+        const generationTasks = Array.from({ length: snapshot.generationCount }, (_, index) => runGenerationSlot(index, snapshot));
 
-        const result = await Promise.allSettled(tasks);
+        const result = await Promise.allSettled(generationTasks);
         const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
         const successCount = successImages.length;
-        const failCount = generationCount - successCount;
+        const failCount = snapshot.generationCount - successCount;
         const failed = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
 
         try {
@@ -177,11 +209,11 @@ export default function ImagePage() {
             );
             saveLog(
                 buildLog({
-                    prompt: text,
-                    model,
-                    config: { ...snapshot.config, count: String(generationCount) },
+                    prompt: snapshot.text,
+                    model: snapshot.model,
+                    config: { ...snapshot.config, count: String(snapshot.generationCount) },
                     references: snapshot.references,
-                    durationMs: performance.now() - batchStartedAt,
+                    durationMs: performance.now() - snapshot.batchStartedAt,
                     successCount,
                     failCount,
                     status: successCount ? "成功" : "失败",
@@ -190,7 +222,7 @@ export default function ImagePage() {
             );
             successCount ? message.success("图片已生成") : message.error(failed?.reason instanceof Error ? failed.reason.message : "生成失败");
         } finally {
-            setRunning(false);
+            updateTask(snapshot.taskId, (task) => ({ ...task, running: false, elapsedMs: performance.now() - snapshot.batchStartedAt }));
         }
     };
 
@@ -200,7 +232,7 @@ export default function ImagePage() {
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {
         const stored = await uploadImage(image.dataUrl);
-        setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
+        updateActiveTask((task) => ({ ...task, references: [...task.references, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }] }));
         message.success("已加入参考图");
     };
 
@@ -220,10 +252,10 @@ export default function ImagePage() {
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {
         if (payload.kind === "text") {
-            setPrompt(payload.content);
+            updateActiveTask((task) => ({ ...task, prompt: payload.content }));
         } else if (payload.kind === "image") {
             const stored = await uploadImage(payload.dataUrl);
-            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
+            updateActiveTask((task) => ({ ...task, references: [...task.references, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }] }));
         } else {
             message.warning("生图工作台只能使用文本或图片素材");
         }
@@ -231,22 +263,16 @@ export default function ImagePage() {
     };
 
     const createSession = () => {
-        setPrompt("");
-        setReferences([]);
-        setResults([]);
-        setElapsedMs(0);
-        setStartedAt(0);
+        const task = createWorkbenchTask();
+        setTasks((value) => [task, ...value]);
+        setActiveTaskId(task.id);
         setSelectedLogIds([]);
-        setPreviewLog(null);
     };
 
     const deleteSelectedLogs = () => {
         const imageKeys = logs.filter((log) => selectedLogIds.includes(log.id)).flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
         void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(refreshLogs);
-        if (previewLog && selectedLogIds.includes(previewLog.id)) {
-            setPreviewLog(null);
-            setResults([]);
-        }
+        setTasks((value) => value.map((task) => (task.previewLog && selectedLogIds.includes(task.previewLog.id) ? { ...task, previewLog: null, results: [] } : task)));
         setSelectedLogIds([]);
         setDeleteConfirmOpen(false);
     };
@@ -258,20 +284,28 @@ export default function ImagePage() {
     const refreshLogs = async () => setLogs(await readStoredLogs());
 
     const previewGenerationLog = async (log: GenerationLog) => {
-        setPreviewLog(log);
+        const taskId = tasks.find((task) => task.previewLog?.id === log.id)?.id || nanoid();
+        const task = createWorkbenchTask({
+            id: taskId,
+            prompt: log.prompt,
+            references: log.references || [],
+            results: log.images.map((image) => ({ id: image.id, status: "success", image })),
+            elapsedMs: log.durationMs,
+            previewLog: log,
+        });
+        setTasks((value) => (value.some((item) => item.id === taskId) ? value.map((item) => (item.id === taskId ? task : item)) : [task, ...value]));
+        setActiveTaskId(taskId);
         setLogsOpen(false);
-        setPrompt(log.prompt);
-        setReferences(log.references || []);
         if (log.config.imageModel || log.model) updateConfig("imageModel", log.config.imageModel || log.model);
         if (log.config.quality) updateConfig("quality", log.config.quality);
         if (log.config.size) updateConfig("size", log.config.size);
         if (log.config.count) updateConfig("count", log.config.count);
         setImageRequestMode(log.config.imageRequestMode || "global");
-        setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
     };
 
-    const buildRequestSnapshot = () => {
-        const text = prompt.trim();
+    const buildRequestSnapshot = (task?: WorkbenchTask) => {
+        if (!task) return null;
+        const text = task.prompt.trim();
         if (!text) {
             message.error("请输入生图提示词");
             return null;
@@ -281,10 +315,10 @@ export default function ImagePage() {
             openConfigDialog(true);
             return null;
         }
-        return { text, config: { ...effectiveConfig, model, count: "1", imageRequestMode: resolveImageRequestMode(effectiveConfig, imageRequestMode) }, references: [...references] };
+        return { taskId: task.id, text, model, generationCount, batchStartedAt: performance.now(), config: { ...effectiveConfig, model, count: "1", imageRequestMode: resolveImageRequestMode(effectiveConfig, imageRequestMode) }, references: [...task.references] };
     };
 
-    const runGenerationSlot = async (index: number, snapshot: { text: string; config: AiConfig; references: ReferenceImage[] }) => {
+    const runGenerationSlot = async (index: number, snapshot: RequestSnapshot) => {
         const itemStartedAt = performance.now();
         try {
             const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references) : await requestGeneration(snapshot.config, snapshot.text);
@@ -292,20 +326,21 @@ export default function ImagePage() {
             if (!image) throw new Error("接口没有返回图片");
             const meta = await readImageMeta(image.dataUrl);
             const nextImage = { id: image.id, dataUrl: image.dataUrl, durationMs: performance.now() - itemStartedAt, width: meta.width, height: meta.height, bytes: getDataUrlByteSize(image.dataUrl) };
-            setResults((value) => updateResultAt(value, index, { status: "success", image: nextImage }));
+            updateTask(snapshot.taskId, (task) => ({ ...task, results: updateResultAt(task.results, index, { status: "success", image: nextImage }) }));
             return nextImage;
         } catch (error) {
-            setResults((value) => updateResultAt(value, index, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }));
+            updateTask(snapshot.taskId, (task) => ({ ...task, results: updateResultAt(task.results, index, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }) }));
             throw error;
         }
     };
 
     const retryResult = (index: number) => {
-        const snapshot = buildRequestSnapshot();
+        const snapshot = buildRequestSnapshot(activeTask);
         if (!snapshot) return;
-        setPreviewLog(null);
-        setResults((value) => updateResultAt(value, index, { status: "pending", error: undefined, image: undefined }));
-        void runGenerationSlot(index, snapshot).catch(() => {});
+        updateTask(snapshot.taskId, (task) => ({ ...task, running: true, startedAt: snapshot.batchStartedAt, elapsedMs: 0, previewLog: null, results: updateResultAt(task.results, index, { status: "pending", error: undefined, image: undefined }) }));
+        void runGenerationSlot(index, { ...snapshot, generationCount: 1 })
+            .catch(() => {})
+            .finally(() => updateTask(snapshot.taskId, (task) => ({ ...task, running: false, elapsedMs: performance.now() - snapshot.batchStartedAt })));
     };
 
     return (
@@ -313,9 +348,12 @@ export default function ImagePage() {
             <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
                 <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
                     <LogPanel
+                        tasks={tasks}
+                        activeTaskId={activeTask?.id}
                         logs={logs}
                         selectedLogIds={selectedLogIds}
                         activeLogId={previewLog?.id}
+                        onTaskClick={setActiveTaskId}
                         onSelectedLogIdsChange={setSelectedLogIds}
                         onCreateSession={createSession}
                         onDeleteSelected={() => setDeleteConfirmOpen(true)}
@@ -354,7 +392,7 @@ export default function ImagePage() {
                                         </Button>
                                     </div>
                                 </div>
-                                <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={7} placeholder="描述画面主体、风格、构图、光线和用途" />
+                                <Input.TextArea value={prompt} onChange={(event) => updateActiveTask((task) => ({ ...task, prompt: event.target.value }))} rows={7} placeholder="描述画面主体、风格、构图、光线和用途" />
                             </div>
 
                             <div className="min-w-0">
@@ -381,11 +419,11 @@ export default function ImagePage() {
                                         <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
                                             <img src={item.dataUrl} alt={item.name} className="size-full object-cover" />
                                             <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{imageReferenceLabel(index)}</span>
-                                            <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
+                                            <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => updateActiveTask((task) => ({ ...task, references: moveListItem(task.references, index, offset) }))} />
                                             <button
                                                 type="button"
                                                 className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
-                                                onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))}
+                                                onClick={() => updateActiveTask((task) => ({ ...task, references: task.references.filter((ref) => ref.id !== item.id) }))}
                                                 aria-label="移除参考图"
                                             >
                                                 <Trash2 className="size-3.5" />
@@ -458,9 +496,12 @@ export default function ImagePage() {
             />
             <Drawer title="生成记录" placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
                 <LogPanel
+                    tasks={tasks}
+                    activeTaskId={activeTask?.id}
                     logs={logs}
                     selectedLogIds={selectedLogIds}
                     activeLogId={previewLog?.id}
+                    onTaskClick={setActiveTaskId}
                     onSelectedLogIdsChange={setSelectedLogIds}
                     onCreateSession={createSession}
                     onDeleteSelected={() => setDeleteConfirmOpen(true)}
@@ -472,7 +513,7 @@ export default function ImagePage() {
                     <GenerationSettings config={effectiveConfig} model={model} imageRequestMode={imageRequestMode} onImageRequestModeChange={setImageRequestMode} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
                 </div>
             </Drawer>
-            <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
+            <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={(value) => updateActiveTask((task) => ({ ...task, prompt: value }))} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title="删除生成记录" open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 确定删除选中的 {selectedLogIds.length} 条生成记录吗？
@@ -609,18 +650,43 @@ function updateResultAt(results: GenerationResult[], index: number, next: Partia
     return results.map((item, itemIndex) => (itemIndex === index ? { ...item, ...next } : item));
 }
 
+function createWorkbenchTask(overrides: Partial<WorkbenchTask> = {}): WorkbenchTask {
+    return {
+        id: nanoid(),
+        createdAt: Date.now(),
+        prompt: "",
+        references: [],
+        results: [],
+        running: false,
+        startedAt: 0,
+        elapsedMs: 0,
+        previewLog: null,
+        ...overrides,
+    };
+}
+
+function workbenchTaskTitle(task: WorkbenchTask) {
+    return task.previewLog?.title || task.prompt.trim().slice(0, 18) || "未命名任务";
+}
+
 function LogPanel({
+    tasks,
+    activeTaskId,
     logs,
     selectedLogIds,
     activeLogId,
+    onTaskClick,
     onSelectedLogIdsChange,
     onCreateSession,
     onDeleteSelected,
     onPreviewLog,
 }: {
+    tasks: WorkbenchTask[];
+    activeTaskId?: string;
     logs: GenerationLog[];
     selectedLogIds: string[];
     activeLogId?: string;
+    onTaskClick: (id: string) => void;
     onSelectedLogIdsChange: (ids: string[]) => void;
     onCreateSession: () => void;
     onDeleteSelected: () => void;
@@ -648,6 +714,17 @@ function LogPanel({
                     删除
                 </Button>
             </div>
+            <div className="mb-4 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold">工作任务</span>
+                    <Tag className="m-0">{tasks.length}</Tag>
+                </div>
+                <div className="space-y-2">
+                    {tasks.map((task) => (
+                        <TaskCard key={task.id} task={task} active={activeTaskId === task.id} onClick={() => onTaskClick(task.id)} />
+                    ))}
+                </div>
+            </div>
             <div className="space-y-3">
                 {logs.map((log) => (
                     <LogCard
@@ -662,6 +739,44 @@ function LogPanel({
                 {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">暂无生成记录</div> : null}
             </div>
         </>
+    );
+}
+
+function TaskCard({ task, active, onClick }: { task: WorkbenchTask; active: boolean; onClick: () => void }) {
+    const successCount = task.results.filter((item) => item.status === "success").length;
+    const failCount = task.results.filter((item) => item.status === "failed").length;
+    return (
+        <button
+            type="button"
+            className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`}
+            onClick={onClick}
+        >
+            <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-sm font-semibold">{workbenchTaskTitle(task)}</span>
+                {task.running ? (
+                    <Tag className="m-0 shrink-0" color="processing">
+                        生成中
+                    </Tag>
+                ) : successCount || failCount ? (
+                    <Tag className="m-0 shrink-0">完成</Tag>
+                ) : (
+                    <Tag className="m-0 shrink-0">草稿</Tag>
+                )}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1">
+                {successCount ? <Tag className="m-0 text-xs">成功 {successCount}</Tag> : null}
+                {failCount ? (
+                    <Tag className="m-0 text-xs" color="red">
+                        失败 {failCount}
+                    </Tag>
+                ) : null}
+                {task.running || task.elapsedMs ? (
+                    <Tag className="m-0 text-xs" color="green">
+                        {formatDuration(task.elapsedMs)}
+                    </Tag>
+                ) : null}
+            </div>
+        </button>
     );
 }
 

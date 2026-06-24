@@ -6,6 +6,7 @@ import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 export type ApiCallFormat = "openai" | "gemini";
+export type AiProxyMode = "direct" | "nextjs";
 export type ImageRequestMode = "sync" | "stream";
 export type ImageRequestModeOption = "global" | ImageRequestMode;
 
@@ -15,6 +16,7 @@ export type ModelChannel = {
     baseUrl: string;
     apiKey: string;
     apiFormat: ApiCallFormat;
+    proxyMode: AiProxyMode;
     models: string[];
 };
 
@@ -23,6 +25,7 @@ export type AiConfig = {
     baseUrl: string;
     apiKey: string;
     apiFormat: ApiCallFormat;
+    proxyMode: AiProxyMode;
     channels: ModelChannel[];
     model: string;
     imageModel: string;
@@ -70,6 +73,7 @@ export const defaultConfig: AiConfig = {
     baseUrl: OPENAI_BASE_URL,
     apiKey: "",
     apiFormat: "openai",
+    proxyMode: "direct",
     channels: [
         {
             id: "default",
@@ -77,6 +81,7 @@ export const defaultConfig: AiConfig = {
             baseUrl: OPENAI_BASE_URL,
             apiKey: "",
             apiFormat: "openai",
+            proxyMode: "direct",
             models: ["gpt-image-2", "grok-imagine-video", "gpt-5.5", "gpt-4o-mini-tts"],
         },
     ],
@@ -227,6 +232,7 @@ export const useConfigStore = create<ConfigStore>()(
                         ...config,
                         channelMode: "local",
                         apiFormat: normalizeApiFormat(config.apiFormat),
+                        proxyMode: normalizeAiProxyMode(config.proxyMode),
                         channels,
                         models,
                         imageModel: normalizeModelOptionValue(config.imageModel || config.model, channels),
@@ -274,6 +280,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
         apiKey: channel?.apiKey || "",
         apiFormat,
+        proxyMode: normalizeAiProxyMode(channel?.proxyMode),
         models: uniqueRawModels(channel?.models || []),
     };
 }
@@ -334,6 +341,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
         apiFormat: channel.apiFormat,
+        proxyMode: channel.proxyMode,
     };
 }
 
@@ -387,6 +395,10 @@ export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
     return apiFormat === "gemini" ? "gemini" : "openai";
+}
+
+function normalizeAiProxyMode(proxyMode: unknown): AiProxyMode {
+    return proxyMode === "nextjs" ? "nextjs" : "direct";
 }
 
 function uniqueRawModels(models: string[]) {
